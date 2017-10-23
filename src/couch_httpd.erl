@@ -268,7 +268,7 @@ handle_request_int(MochiReq, DefaultFun,
     Method2 = case lists:member(MethodOverride, ["GET", "HEAD", "POST",
                                                  "PUT", "DELETE",
                                                  "TRACE", "CONNECT",
-                                                 "COPY"]) of
+                                                 "COPY", "PATCH"]) of
     true ->
         couch_log:info("MethodOverride: ~s (real method was ~s)",
                        [MethodOverride, Method1]),

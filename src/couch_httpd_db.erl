@@ -614,8 +614,32 @@ db_doc_req(#httpd{method='COPY'}=Req, Db, SourceDocId) ->
     % save new doc
     update_doc(Req, Db, TargetDocId, Doc#doc{id=TargetDocId, revs=TargetRevs});
 
+db_doc_req(#httpd{method='PATCH'}=Req, Db, DocId) ->
+    couch_doc:validate_docid(DocId),
+
+    case couch_util:to_list(couch_httpd:header_value(Req, "Content-Type")) of
+    ("multipart/related;" ++ _) = ContentType ->
+        couch_httpd:check_max_request_length(Req),
+        {ok, Doc0, WaitFun, Parser} = couch_doc:doc_from_multi_part_stream(
+            ContentType, fun() -> receive_request_data(Req) end),
+        Patch = couch_patch_from_req(Req, DocId, Doc0),
+        try
+            Result = patch_doc(Req, Db, DocId, Patch),
+            WaitFun(),
+            Result
+        catch throw:Err ->
+            % Document rejected by a validate_doc_update function.
+            couch_httpd_multipart:abort_multipart_stream(Parser),
+            throw(Err)
+        end;
+    _Else ->
+        Body = couch_httpd:json_body(Req),
+        Patch = couch_patch_from_req(Req, DocId, Body),
+        patch_doc(Req, Db, DocId, Patch)
+    end;
+
 db_doc_req(Req, _Db, _DocId) ->
-    send_method_not_allowed(Req, "DELETE,GET,HEAD,POST,PUT,COPY").
+    send_method_not_allowed(Req, "DELETE,GET,HEAD,POST,PUT,COPY,PATCH").
 
 
 send_doc(Req, Doc, Options) ->
@@ -810,6 +834,35 @@ couch_doc_from_req(Req, DocId, #doc{revs=Revs}=Doc) ->
     Doc#doc{id=DocId, revs=Revs2};
 couch_doc_from_req(Req, DocId, Json) ->
     couch_doc_from_req(Req, DocId, couch_doc:from_json_obj_validate(Json)).
+
+couch_patch_from_req(Req, DocId, #doc{revs=Revs}=Doc) ->
+    Rev = case couch_httpd:qs_value(Req, "rev") of
+    undefined ->
+        undefined;
+    QSRev ->
+        couch_doc:parse_rev(QSRev)
+    end,
+    Revs2 =
+    case Revs of
+    {Start, [RevId|_]} ->
+        if Rev /= undefined andalso Rev /= {Start, RevId} ->
+            throw({bad_request, "Document rev from request body and query "
+                   "string have different values"});
+        true ->
+            case extract_header_rev(Req, {Start, RevId}) of
+            missing_rev -> {0, []};
+            _ -> Revs
+            end
+        end;
+    _ ->
+        case extract_header_rev(Req, Rev) of
+        missing_rev -> {0, []};
+        {Pos, RevId2} -> {Pos, [RevId2]}
+        end
+    end,
+    Doc#doc{id=DocId, revs=Revs2};
+couch_patch_from_req(Req, DocId, Json) ->
+    couch_patch_from_req(Req, DocId, couch_doc:from_json_patch(Json)).
 
 % Useful for debugging
 % couch_doc_open(Db, DocId) ->
